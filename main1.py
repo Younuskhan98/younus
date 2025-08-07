@@ -1,92 +1,130 @@
 import streamlit as st
 import wikipedia
-from PIL import Image
-import requests
+import time
+from gtts import gTTS
 from io import BytesIO
+import base64
 
-# Page configuration
-st.set_page_config(page_title="📚 Hey i'm V7chatbot", page_icon="📖")
+# --- Page Setup ---
+st.set_page_config(page_title="Wikipedia Chatbot", page_icon="📖")
+st.title("Hey I'm V7chatBot")
 
-# Initialize chat history before any interaction
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- Sidebar ---
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
+st.sidebar.header("Options")
 
-# Sidebar: Theme toggle & Clear button
-st.sidebar.title("🔧 Options")
-theme = st.sidebar.selectbox("🌗 Theme", ["Light", "Dark"])
-if st.sidebar.button("🧹 Clear Chat"):
-    st.session_state.messages = []
-    st.rerun()
+# Language Selector
+language = st.sidebar.selectbox(
+    "Choose Language",
+    options=["English", "Kannada", "Tamil", "Telugu", "Urdu", "Malayalam", "Hindi", "Spanish", "French", "German", "Arabic", "Japanese"],
+    index=0
+)
 
-# Simulated dark mode using CSS
+# Set Wikipedia language
+lang_codes = {
+    "English": "en", "Kannada": "kn", "Tamil": "ta", "Telugu": "te", "Urdu": "ur",
+    "Malayalam": "ml", "Hindi": "hi", "Spanish": "es", "French": "fr", "German": "de",
+    "Arabic": "ar", "Japanese": "ja"
+}
+wikipedia.set_lang(lang_codes[language])
+
+# Theme Selector
+theme = st.sidebar.radio("Theme", options=["Light", "Dark"], index=0)
 if theme == "Dark":
     st.markdown("""
         <style>
-        html, body, [class*="css"]  {
-            background-color: #1e1e1e !important;
-            color: #f0f0f0 !important;
-        }
-        .stTextInput>div>div>input {
-            background-color: #333 !important;
-            color: white !important;
-        }
-        .stButton>button {
-            background-color: #333;
+        body, .stApp {
+            background-color: #1e1e1e;
             color: white;
-        }
-        .stMarkdown {
-            color: white !important;
         }
         </style>
     """, unsafe_allow_html=True)
 
-# App title and subtitle
-st.title("📚 Hey i'm V7chatbot")
-st.caption("Ask me anything and I’ll fetch a short summary and image from Wikipedia!")
+# Clear All Button
+if st.sidebar.button("🗑 Clear Chat & History"):
+    st.session_state.messages = []
+    st.session_state.history = []
+    st.session_state.text_input = ""
 
-# Wikipedia lookup function
-def get_wikipedia_summary_and_image(query):
+# --- Initialize Session State ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []  # Each item: {'user': ..., 'bot': ..., 'images': [...], 'audio': ...}
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+# --- Wikipedia Search Function ---
+def get_wikipedia_summary(query):
     try:
-        results = wikipedia.search(query)
-        if not results:
-            return "❌ Sorry, I couldn't find anything on that topic.", None
+        page = wikipedia.page(query, auto_suggest=False, redirect=True)
+        summary = page.summary
+        image_urls = [img for img in page.images if img.lower().endswith(('.jpg', '.jpeg', '.png'))][:5]
 
-        page = wikipedia.page(results[0], auto_suggest=False, redirect=True)
-        summary = wikipedia.summary(results[0], sentences=2, auto_suggest=False, redirect=True)
+        # Convert summary to speech
+        tts = gTTS(summary, lang=lang_codes[language])
+        audio_bytes = BytesIO()
+        tts.write_to_fp(audio_bytes)
+        audio_bytes.seek(0)
 
-        image_url = None
-        for img in page.images:
-            if img.lower().endswith((".jpg", ".jpeg", ".png")):
-                image_url = img
-                break
-
-        return summary, image_url
+        return summary, image_urls, audio_bytes
 
     except wikipedia.DisambiguationError as e:
-        return f"⚠️ Your query is ambiguous. Did you mean: {', '.join(e.options[:5])}?", None
+        return f"Your query is ambiguous. Did you mean: {', '.join(e.options[:5])}?", [], None
     except wikipedia.PageError:
-        return "❌ Sorry, I couldn't find a page matching your query.", None
+        return "Sorry, I couldn't find a page matching your query.", [], None
     except Exception as e:
-        return "⚠️ Oops, something went wrong.", None
+        return f"Oops, something went wrong. {str(e)}", [], None
 
-# User input
-user_input = st.text_input("💬 Ask me anything about a topic:")
+# --- TABS ---
+tab1, tab2 = st.tabs(["💬 Chat", "📜 History"])
 
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    summary, image_url = get_wikipedia_summary_and_image(user_input)
-    st.session_state.messages.append({"role": "bot", "content": summary, "image": image_url})
+# --- TAB 1: Chat ---
+with tab1:
+    user_input = st.text_input("Type your question:")
 
-# Display chat
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.markdown(f"🧑 **You:** {msg['content']}")
+    suggestions = wikipedia.search(user_input) if user_input else []
+    selected_query = st.selectbox("Select a suggestion:", options=[""] + suggestions)
+
+    if selected_query.strip() != "":
+        summary, image_urls, audio_data = get_wikipedia_summary(selected_query)
+        st.session_state.messages.append({
+            "user": selected_query,
+            "bot": summary,
+            "images": image_urls,
+            "audio": audio_data
+        })
+        st.session_state.history.append(selected_query)
+
+    for pair in st.session_state.messages:
+        st.markdown(f"🧑‍💻 *You:* {pair['user']}")
+        placeholder = st.empty()
+        typed_text = ""
+        for char in pair['bot']:
+            typed_text += char
+            placeholder.markdown(f"🤖 *Bot:* {typed_text}")
+            time.sleep(0.0001)
+
+        # Auto-playing audio
+        if pair.get("audio"):
+            audio_bytes = pair["audio"].read()
+            b64 = base64.b64encode(audio_bytes).decode()
+            audio_html = f"""
+                <audio autoplay controls>
+                    <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+                </audio>
+            """
+            st.markdown(audio_html, unsafe_allow_html=True)
+
+        # Show images
+        if pair.get("images"):
+            for idx, img_url in enumerate(pair["images"]):
+                st.image(img_url, width=350, caption=f"📷 Image {idx + 1}")
+
+# --- TAB 2: History ---
+with tab2:
+    st.subheader("📜 Your Query History")
+    if st.session_state.history:
+        for i, item in enumerate(reversed(st.session_state.history), 1):
+            st.markdown(f"{i}. **{item}**")
     else:
-        st.markdown(f"🤖 **Bot:** {msg['content']}")
-        if msg.get("image"):
-            try:
-                img_response = requests.get(msg["image"])
-                img = Image.open(BytesIO(img_response.content))
-                st.image(img, caption="Image from Wikipedia", use_container_width=True)
-            except Exception:
-                st.warning("⚠️ Couldn't load image.")
+        st.info("No history yet.")
+
